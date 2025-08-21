@@ -100,3 +100,13 @@ Example:
 
 DLL_NAME = "Windows.ApplicationModel.Store.dll"
 FOLDERS_64 = ["System32", "SysWOW64"]
+
+
+Fix this issue:
+when restore is run 
+"Starting restore operation...
+Starting system file checker...
+Running files check, please wait...
+All required DLL files found. Ready to use."
+
+and then restore is cancelled
