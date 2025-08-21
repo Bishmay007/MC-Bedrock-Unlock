@@ -209,8 +209,9 @@ class BedrockUnlocker(QMainWindow):
         self.set_icon()
         self.setStyleSheet(self.get_stylesheet())
 
+    
     def get_stylesheet(self) -> str:
-        """Return application stylesheet"""
+        """Return application stylesheet with regular button styling (white theme)"""
         return """
         QMainWindow {
             background-color: #f8f8f8;
@@ -219,7 +220,7 @@ class BedrockUnlocker(QMainWindow):
         QPushButton {
             background-color: #e0e0e0;
             border: 2px solid #cccccc;
-            border-radius: 8px;
+            border-radius: 0px;
             padding: 8px;
             font-weight: bold;
             color: #222222;
@@ -242,7 +243,7 @@ class BedrockUnlocker(QMainWindow):
             border-radius: 4px;
             padding: 4px;
             color: #222222;
-            font-family: 'Consolas', 'Courier New', monospace;
+            font-family: monospace;
         }
         QProgressBar {
             border: 1px solid #cccccc;
