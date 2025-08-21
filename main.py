@@ -14,7 +14,7 @@ from PyQt5.QtGui import QIcon, QFont, QPalette
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer
 import platform
 
-
+# Ensure the 'dll' directory exists
 class WorkerThread(QThread):
     """Thread for handling long-running operations without blocking UI"""
     log_signal = pyqtSignal(str)
