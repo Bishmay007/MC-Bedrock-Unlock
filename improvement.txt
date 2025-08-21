@@ -1,0 +1,102 @@
+1. Repeated is_64bit_system() Implementation
+Problem:
+
+The method is_64bit_system() appears twice:
+
+Once in WorkerThread
+
+Once in BedrockUnlocker
+
+Improvement:
+
+Extract it into a standalone utility function at the top, so both classes can use the same version.
+
+2. Repeated DLL Path Checking Code
+Problem:
+
+The logic for checking DLLs in unlock_action() and check_required_files() is almost identical.
+
+Improvement:
+
+Move the logic into a helper function, e.g.,
+
+def get_missing_dlls() -> List[str]:
+    missing = []
+    base = Path(resource_path("dll"))
+    if is_64bit_system():
+        targets = [
+            base / "64-bit" / "System32" / "Windows.ApplicationModel.Store.dll",
+            base / "64-bit" / "SysWOW64" / "Windows.ApplicationModel.Store.dll"
+        ]
+    else:
+        targets = [base / "32-bit" / "System32" / "Windows.ApplicationModel.Store.dll"]
+
+    for path in targets:
+        if not path.exists():
+            missing.append(str(path))
+    return missing
+
+
+Then just do:
+
+missing = get_missing_dlls()
+if missing:
+    ...
+
+✅ 3. Redundant Code in Icon Setup
+Problem:
+
+Both main() and BedrockUnlocker.set_icon() contain logic to set the application/window icon.
+
+Improvement:
+
+You can remove the duplicate in main() and only keep it inside set_icon().
+
+Alternatively, create a set_application_icon() function and use it in both.
+
+✅ 4. Thread Initialization is Repetitive
+Problem:
+
+Both start_unlock_operation() and start_restore_operation() repeat the thread setup logic.
+
+Improvement:
+
+Create a helper method:
+
+def start_worker_thread(self, operation: str):
+    self.set_ui_enabled(False)
+    self.append_log("=" * 50)
+    self.append_log(f"Starting {operation} operation...")
+
+    self.worker_thread = WorkerThread(operation)
+    self.worker_thread.log_signal.connect(self.append_log)
+    self.worker_thread.progress_signal.connect(self.progress_bar.setValue)
+    self.worker_thread.finished_signal.connect(self.on_operation_finished)
+    self.worker_thread.start()
+
+
+Then replace the existing methods with:
+
+def start_unlock_operation(self):
+    self.start_worker_thread("unlock")
+
+def start_restore_operation(self):
+    self.start_worker_thread("restore")
+
+
+✅ 5. Centralize Resource Path Handling
+Problem:
+
+Multiple components call resource_path(...). Consider wrapping DLL path creation in a helper:
+
+def get_dll_path(arch_folder: str, system_folder: str) -> Path:
+    return Path(resource_path(f"dll/{arch_folder}/{system_folder}/Windows.ApplicationModel.Store.dll"))
+
+✅ 6. Hardcoded Strings and Repeated Paths
+
+Use constants for values like "Windows.ApplicationModel.Store.dll" or "System32", "SysWOW64" to reduce repetition and potential typo issues.
+
+Example:
+
+DLL_NAME = "Windows.ApplicationModel.Store.dll"
+FOLDERS_64 = ["System32", "SysWOW64"]

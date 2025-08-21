@@ -14,6 +14,14 @@ from PyQt5.QtGui import QIcon, QFont, QPalette
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer
 import platform
 
+def resource_path(relative_path):
+    """ Get absolute path to resource, works for dev and for PyInstaller """
+    try:
+        base_path = sys._MEIPASS
+    except AttributeError:
+        base_path = os.path.abspath(".")
+    return os.path.join(base_path, relative_path)
+
 # Ensure the 'dll' directory exists
 class WorkerThread(QThread):
     """Thread for handling long-running operations without blocking UI"""
@@ -57,17 +65,20 @@ class WorkerThread(QThread):
             self.progress_signal.emit(progress)
         
         # Copy custom DLLs
-        self.copy_custom_dlls()
+        copy_success = self.copy_custom_dlls()
         self.progress_signal.emit(100)
-        self.finished_signal.emit(True, "Unlock operation completed successfully")
+        if copy_success:
+            self.finished_signal.emit(True, "Unlock operation completed successfully")
+        else:
+            self.finished_signal.emit(False, "Unlock operation failed: One or more custom DLLs were not copied")
     
     def restore_operation(self):
-        """Perform restore operation using sfc /scannow"""
+        """Perform restore operation using sfc /scannow with accurate progress"""
         self.log_signal.emit("Starting system file checker...")
-        self.progress_signal.emit(10)
-        
+        self.progress_signal.emit(0)
+        self.process = None  # Store process handle
         try:
-            process = subprocess.Popen(
+            self.process = subprocess.Popen(
                 ["sfc", "/scannow"],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
@@ -75,18 +86,25 @@ class WorkerThread(QThread):
                 creationflags=subprocess.CREATE_NO_WINDOW
             )
             
-            for line in process.stdout:
+            for line in self.process.stdout:
                 line = line.strip()
                 if line:
                     self.log_signal.emit(line)
+                    # Parse progress from "Verification XX% complete."
+                    if "Verification" in line and "% complete" in line:
+                        import re
+                        match = re.search(r'(\d+)% complete', line)
+                        if match:
+                            percent = int(match.group(1))
+                            self.progress_signal.emit(percent)
             
-            process.wait()
+            self.process.wait()
             self.progress_signal.emit(100)
             
-            if process.returncode == 0:
+            if self.process.returncode == 0:
                 self.finished_signal.emit(True, "System file check completed")
             else:
-                self.finished_signal.emit(False, f"SFC returned error code: {process.returncode}")
+                self.finished_signal.emit(False, f"SFC returned error code: {self.process.returncode}")
                 
         except Exception as e:
             self.finished_signal.emit(False, f"Error running sfc: {str(e)}")
@@ -107,16 +125,16 @@ class WorkerThread(QThread):
     def process_dll_file(self, target_file: str, folder_name: str) -> bool:
         """Process a single DLL file (take ownership, grant permissions, delete)"""
         if not os.path.exists(target_file):
-            self.log_signal.emit(f"File not found in {folder_name}")
+            self.log_signal.emit(f"{folder_name} file not present -- skipping")
             return True  # Not an error if file doesn't exist
-        
+
         try:
             # Create backup
             backup_path = f"{target_file}.backup"
             if not os.path.exists(backup_path):
                 shutil.copy2(target_file, backup_path)
                 self.log_signal.emit(f"Created backup: {backup_path}")
-            
+
             # Take ownership
             self.log_signal.emit(f"Taking ownership of {folder_name} file...")
             result = subprocess.run(
@@ -125,11 +143,11 @@ class WorkerThread(QThread):
                 text=True,
                 creationflags=subprocess.CREATE_NO_WINDOW
             )
-            
+
             if result.returncode != 0:
-                self.log_signal.emit(f"Failed to take ownership: {result.stderr}")
+                self.log_signal.emit(f"Failed to take ownership: {result.stderr.strip()}")
                 return False
-            
+
             # Grant permissions
             self.log_signal.emit(f"Granting permissions for {folder_name}...")
             result = subprocess.run(
@@ -138,47 +156,72 @@ class WorkerThread(QThread):
                 text=True,
                 creationflags=subprocess.CREATE_NO_WINDOW
             )
-            
+
             if result.returncode != 0:
-                self.log_signal.emit(f"Failed to grant permissions: {result.stderr}")
+                self.log_signal.emit(f"Failed to grant permissions: {result.stderr.strip()}")
                 return False
-            
+
             # Delete file
             self.log_signal.emit(f"Deleting {folder_name} file...")
-            os.remove(target_file)
-            
-            return not os.path.exists(target_file)
-            
+            try:
+                os.remove(target_file)
+            except Exception as e:
+                self.log_signal.emit(f"Error deleting {folder_name}: {str(e)}")
+                return False
+
+            if not os.path.exists(target_file):
+                self.log_signal.emit(f"Successfully deleted {folder_name} file.")
+                return True
+            else:
+                self.log_signal.emit(f"Failed to delete {folder_name} file.")
+                return False
+
         except Exception as e:
             self.log_signal.emit(f"Error processing {folder_name}: {str(e)}")
             return False
     
     def copy_custom_dlls(self):
-        """Copy custom DLL files to system directories"""
+        """Copy custom DLL files to system directories. Returns True if all copies succeed."""
         self.log_signal.emit("Copying custom DLL files...")
-        
+        success = True
         try:
             if self.is_64bit_system():
-                self.copy_dll_file("64-bit", "System32")
-                self.copy_dll_file("64-bit", "SysWOW64")
+                if not self.copy_dll_file("64-bit", "System32"):
+                    success = False
+                if not self.copy_dll_file("64-bit", "SysWOW64"):
+                    success = False
             else:
-                self.copy_dll_file("32-bit", "System32")
+                if not self.copy_dll_file("32-bit", "System32"):
+                    success = False
         except Exception as e:
             self.log_signal.emit(f"Error copying custom DLLs: {str(e)}")
-    
-    def copy_dll_file(self, arch_folder: str, system_folder: str):
-        """Copy a specific DLL file"""
-        src_path = Path("dll") / arch_folder / system_folder / "Windows.ApplicationModel.Store.dll"
+            success = False
+        return success
+
+    def copy_dll_file(self, arch_folder: str, system_folder: str) -> bool:
+        """Copy a specific DLL file. Returns True if copy succeeds."""
+        src_path = Path(resource_path(f"dll/{arch_folder}/{system_folder}/Windows.ApplicationModel.Store.dll"))
         dst_path = Path(os.environ["SystemRoot"]) / system_folder / "Windows.ApplicationModel.Store.dll"
         
         if src_path.exists():
-            shutil.copy2(str(src_path), str(dst_path))
-            self.log_signal.emit(f"Copied custom DLL to {system_folder}")
+            try:
+                shutil.copy2(str(src_path), str(dst_path))
+                self.log_signal.emit(f"Copied custom DLL to {system_folder}")
+                return True
+            except Exception as e:
+                self.log_signal.emit(f"Error copying DLL to {system_folder}: {str(e)}")
+                return False
         else:
-            self.log_signal.emit(f"Warning: Custom DLL not found for {system_folder}")
+            self.log_signal.emit(f"❌ Custom DLL not found for {system_folder}")
+            return False
 
 
 class BedrockUnlocker(QMainWindow):
+
+    def is_64bit_system(self) -> bool:
+        """Check if system is 64-bit"""
+        return platform.machine().endswith('64') or os.environ.get('PROCESSOR_ARCHITECTURE', '').endswith('64')
+
     def __init__(self):
         super().__init__()
         self.worker_thread = None
@@ -263,7 +306,7 @@ class BedrockUnlocker(QMainWindow):
 
     def set_icon(self):
         """Set window icon if available"""
-        icon_path = Path("assets/icon/icon.png")
+        icon_path = Path(resource_path("assets/icon/icon.png"))
         if icon_path.exists():
             self.setWindowIcon(QIcon(str(icon_path)))
 
@@ -381,6 +424,23 @@ class BedrockUnlocker(QMainWindow):
             )
             return
 
+        # Check for custom DLLs before proceeding
+        missing = []
+        if self.is_64bit_system():
+            if not Path(resource_path("dll/64-bit/System32/Windows.ApplicationModel.Store.dll")).exists():
+                missing.append("64-bit/System32")
+            if not Path(resource_path("dll/64-bit/SysWOW64/Windows.ApplicationModel.Store.dll")).exists():
+                missing.append("64-bit/SysWOW64")
+        else:
+            if not Path(resource_path("dll/32-bit/System32/Windows.ApplicationModel.Store.dll")).exists():
+                missing.append("32-bit/System32")
+        if missing:
+            QMessageBox.warning(
+                self,
+                "Missing DLLs",
+                f"Custom DLL files missing for: {', '.join(missing)}.\nUnlock may fail."
+            )
+
         reply = QMessageBox.question(
             self,
             "Confirm Unlock",
@@ -464,6 +524,45 @@ class BedrockUnlocker(QMainWindow):
             self.append_log(f"❌ Operation failed: {message}")
             QMessageBox.critical(self, "Error", f"Operation failed:\n{message}")
 
+    def check_required_files(self):
+        """Check if all required DLL files are present before enabling UI."""
+        self.set_ui_enabled(False)
+        self.append_log("Running files check, please wait...")
+
+        missing = []
+        if self.is_64bit_system():
+            paths = [
+                Path(resource_path("dll/64-bit/System32/Windows.ApplicationModel.Store.dll")),
+                Path(resource_path("dll/64-bit/SysWOW64/Windows.ApplicationModel.Store.dll"))
+            ]
+        else:
+            paths = [
+                Path(resource_path("dll/32-bit/System32/Windows.ApplicationModel.Store.dll"))
+            ]
+
+        for p in paths:
+            if not p.exists():
+                missing.append(str(p))
+
+        if not missing:
+            self.append_log("All required DLL files found. Ready to use.")
+            self.set_ui_enabled(True)
+        else:
+            self.append_log("❌ Necessary files are missing:")
+            for file in missing:
+                self.append_log(f"Missing: {file}")
+            QMessageBox.critical(
+                self,
+                "Missing Files",
+                "Necessary files are not found.\nPlease report this issue to the developers with necessary information."
+            )
+            self.set_ui_enabled(False)
+
+    def showEvent(self, event):
+        """Run file check when window is shown."""
+        super().showEvent(event)
+        QTimer.singleShot(100, self.check_required_files)
+
     def closeEvent(self, event):
         """Handle application close event"""
         if self.worker_thread and self.worker_thread.isRunning():
@@ -474,11 +573,19 @@ class BedrockUnlocker(QMainWindow):
                 QMessageBox.Yes | QMessageBox.No,
                 QMessageBox.No
             )
-            
             if reply == QMessageBox.Yes:
+                # Attempt to terminate restore process if running
+                if self.worker_thread.operation == "restore" and hasattr(self.worker_thread, "process"):
+                    try:
+                        self.worker_thread.process.terminate()
+                        self.worker_thread.process.wait(timeout=5)
+                        self.append_log("Restore process terminated.")
+                    except Exception as e:
+                        self.append_log(f"Error terminating restore process: {str(e)}")
                 self.worker_thread.terminate()
                 self.worker_thread.wait()
                 event.accept()
+                sys.exit(0)  # Ensure proper exit
             else:
                 event.ignore()
         else:
@@ -492,7 +599,7 @@ def main():
     app.setApplicationVersion("2.0")
     
     # Set application icon
-    icon_path = Path("assets/icon/icon.png")
+    icon_path = Path(resource_path("assets/icon/icon.png"))
     if icon_path.exists():
         app.setWindowIcon(QIcon(str(icon_path)))
     
