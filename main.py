@@ -228,6 +228,7 @@ class BedrockUnlocker(QMainWindow):
         self.setup_logging()
         self.init_window()
         self.init_ui()
+        self.check_required_files()
         
     def setup_logging(self):
         """Setup logging configuration"""
@@ -246,7 +247,7 @@ class BedrockUnlocker(QMainWindow):
 
     def init_window(self):
         """Initialize main window properties"""
-        self.setWindowTitle("MC Bedrock Unlocker v2.0")
+        self.setWindowTitle("MC Bedrock Unlocker v1.0")
         self.setFixedSize(800, 500)
         self.center_window()
         self.set_icon()
@@ -424,23 +425,6 @@ class BedrockUnlocker(QMainWindow):
             )
             return
 
-        # Check for custom DLLs before proceeding
-        missing = []
-        if self.is_64bit_system():
-            if not Path(resource_path("dll/64-bit/System32/Windows.ApplicationModel.Store.dll")).exists():
-                missing.append("64-bit/System32")
-            if not Path(resource_path("dll/64-bit/SysWOW64/Windows.ApplicationModel.Store.dll")).exists():
-                missing.append("64-bit/SysWOW64")
-        else:
-            if not Path(resource_path("dll/32-bit/System32/Windows.ApplicationModel.Store.dll")).exists():
-                missing.append("32-bit/System32")
-        if missing:
-            QMessageBox.warning(
-                self,
-                "Missing DLLs",
-                f"Custom DLL files missing for: {', '.join(missing)}.\nUnlock may fail."
-            )
-
         reply = QMessageBox.question(
             self,
             "Confirm Unlock",
@@ -558,10 +542,7 @@ class BedrockUnlocker(QMainWindow):
             )
             self.set_ui_enabled(False)
 
-    def showEvent(self, event):
-        """Run file check when window is shown."""
-        super().showEvent(event)
-        QTimer.singleShot(100, self.check_required_files)
+    
 
     def closeEvent(self, event):
         """Handle application close event"""
